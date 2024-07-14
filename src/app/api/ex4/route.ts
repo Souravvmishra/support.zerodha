@@ -32,7 +32,12 @@ let vectorStore: MemoryVectorStore;
 
 const loadAndProcessDocs = async () => {
     if (!vectorStore) {
-        const filePath = path.join(process.cwd(), 'public', 'zerodha_articles.txt');
+        let filePath;
+        try {
+          filePath  = path.join(process.cwd(), 'public', 'zerodha_articles.txt');
+        } catch (error) {
+            filePath = path.join(process.cwd(), 'zerodha_articles.txt');
+        } 
         const loader = new TextLoader(filePath);
         const rawDocs = await loader.load();
 
