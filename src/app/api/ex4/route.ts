@@ -6,23 +6,14 @@ import {
 import { ChatOpenAI } from '@langchain/openai';
 import { PromptTemplate } from '@langchain/core/prompts';
 import { HttpResponseOutputParser } from 'langchain/output_parsers';
+import { TextLoader } from "langchain/document_loaders/fs/text";
+import { RunnableSequence } from '@langchain/core/runnables';
+import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
+import { OpenAIEmbeddings } from '@langchain/openai';
+import { MemoryVectorStore } from "langchain/vectorstores/memory";
 
-import { JSONLoader } from "langchain/document_loaders/fs/json";
-import { RunnableSequence } from '@langchain/core/runnables'
-import { formatDocumentsAsString } from 'langchain/util/document';
-import { CharacterTextSplitter } from 'langchain/text_splitter';
+export const dynamic = 'force-dynamic';
 
-const loader = new JSONLoader(
-    "src/data/states.json",
-    ["/state", "/code", "/nickname", "/website", "/admission_date", "/admission_number", "/capital_city", "/capital_url", "/population", "/population_rank", "/constitution_url", "/twitter_url"],
-);
-
-export const dynamic = 'force-dynamic'
-
-/**
- * Basic memory formatter that stringifies and passes
- * message history directly into the model.
- */
 const formatMessage = (message: VercelChatMessage) => {
     return `${message.role}: ${message.content}`;
 };
@@ -31,79 +22,83 @@ const TEMPLATE = `Answer the user's questions based only on the following contex
 ==============================
 Context: {context}
 ==============================
-Current conversation: {chat_history}
-
+Current conversation:
+{chat_history}
 user: {question}
 assistant:`;
 
+let vectorStore: MemoryVectorStore;
+
+const loadAndProcessDocs = async () => {
+    if (!vectorStore) {
+        const loader = new TextLoader("src/data/zerodha_articles.txt");
+        const rawDocs = await loader.load();
+
+        const textSplitter = new RecursiveCharacterTextSplitter({
+            chunkSize: 1000,
+            chunkOverlap: 200,
+        });
+        const docs = await textSplitter.splitDocuments(rawDocs);
+
+        vectorStore = await MemoryVectorStore.fromDocuments(docs, new OpenAIEmbeddings());
+    }
+};
 
 export async function POST(req: Request) {
     try {
-        // Extract the `messages` from the body of the request
         const { messages } = await req.json();
+        if (!messages || !Array.isArray(messages)) {
+            throw new Error('Invalid or missing messages array');
+        }
 
         const formattedPreviousMessages = messages.slice(0, -1).map(formatMessage);
-
         const currentMessageContent = messages[messages.length - 1].content;
 
-        const docs = await loader.load();
+        await loadAndProcessDocs();
 
-        // load a JSON object
-        // const textSplitter = new CharacterTextSplitter();
-        // const docs = await textSplitter.createDocuments([JSON.stringify({
-        //     "state": "Kansas",
-        //     "slug": "kansas",
-        //     "code": "KS",
-        //     "nickname": "Sunflower State",
-        //     "website": "https://www.kansas.gov",
-        //     "admission_date": "1861-01-29",
-        //     "admission_number": 34,
-        //     "capital_city": "Topeka",
-        //     "capital_url": "http://www.topeka.org",
-        //     "population": 2893957,
-        //     "population_rank": 34,
-        //     "constitution_url": "https://kslib.info/405/Kansas-Constitution",
-        //     "twitter_url": "http://www.twitter.com/ksgovernment",
-        // })]);
+        const retriever = vectorStore.asRetriever();
+        const relevantDocs = await retriever.getRelevantDocuments(currentMessageContent);
 
         const prompt = PromptTemplate.fromTemplate(TEMPLATE);
-
         const model = new ChatOpenAI({
-            apiKey: process.env.OPENAI_API_KEY!,
+            apiKey: process.env.OPENAI_API_KEY,
             model: 'gpt-3.5-turbo',
             temperature: 0,
-            streaming: true,
-            verbose: true,
         });
 
-        /**
-       * Chat models stream message chunks rather than bytes, so this
-       * output parser handles serialization and encoding.
-       */
-        const parser = new HttpResponseOutputParser();
+        if (!model) {
+            throw new Error('Failed to initialize ChatOpenAI model');
+        }
 
+        const parser = new HttpResponseOutputParser();
         const chain = RunnableSequence.from([
             {
                 question: (input) => input.question,
                 chat_history: (input) => input.chat_history,
-                context: () => formatDocumentsAsString(docs),
+                context: (input) => input.context,
             },
             prompt,
             model,
             parser,
         ]);
 
-        // Convert the response into a friendly text-stream
         const stream = await chain.stream({
             chat_history: formattedPreviousMessages.join('\n'),
             question: currentMessageContent,
+            context: relevantDocs.map(doc => doc.pageContent).join('\n'),
         });
 
-        // Respond with the stream
+        if (!stream) {
+            throw new Error('Failed to generate stream');
+        }
+
+        console.log('Stream generated successfully');
+
         return new StreamingTextResponse(
             stream.pipeThrough(createStreamDataTransformer()),
         );
     } catch (e: any) {
+        console.error('Error in POST function:', e);
         return Response.json({ error: e.message }, { status: e.status ?? 500 });
     }
 }
