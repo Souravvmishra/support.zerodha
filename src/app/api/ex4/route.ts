@@ -11,6 +11,7 @@ import { RunnableSequence } from '@langchain/core/runnables';
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import { MemoryVectorStore } from "langchain/vectorstores/memory";
+import path from 'path';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,7 +32,8 @@ let vectorStore: MemoryVectorStore;
 
 const loadAndProcessDocs = async () => {
     if (!vectorStore) {
-        const loader = new TextLoader("src/data/zerodha_articles.txt");
+        const filePath = path.join(process.cwd(), 'public', 'zerodha_articles.txt');
+        const loader = new TextLoader(filePath);
         const rawDocs = await loader.load();
 
         const textSplitter = new RecursiveCharacterTextSplitter({
