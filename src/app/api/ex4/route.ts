@@ -128,7 +128,7 @@ export async function POST(req: Request) {
     });
 
     return new StreamingTextResponse(
-      stream.pipeThrough(createStreamDataTransformer()).pipeThrough(cacheStream)
+      stream.pipeThrough(createStreamDataTransformer())
     );
   } catch (e: any) {
     console.error('Error in POST function:', e);
