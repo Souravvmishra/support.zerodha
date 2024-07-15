@@ -12,7 +12,7 @@ import { RunnableSequence } from '@langchain/core/runnables'
 import { formatDocumentsAsString } from 'langchain/util/document';
 import { CharacterTextSplitter } from 'langchain/text_splitter';
 
-let loader
+let loader: JSONLoader
 
 try {
   loader = new JSONLoader(
