@@ -9,6 +9,7 @@ import { OpenAIEmbeddings } from '@langchain/openai';
 import { MemoryVectorStore } from "langchain/vectorstores/memory";
 import path from 'path';
 
+export const maxDuration = 60; // This function can run for a maximum of 5 seconds
 export const dynamic = 'force-dynamic';
 
 const formatMessage = (message: VercelChatMessage) => {
@@ -24,9 +25,11 @@ Current conversation:
 user: {question}
 assistant:`;
 
-let vectorStore: MemoryVectorStore;
+let vectorStore: MemoryVectorStore | null = null;
+let isInitialized = false;
+const initializationPromise = initializeVectorStore();
 
-const loadAndProcessDocs = async () => {
+async function initializeVectorStore() {
   if (!vectorStore) {
     let filePath;
     try {
@@ -45,8 +48,12 @@ const loadAndProcessDocs = async () => {
     const docs = await textSplitter.splitDocuments(rawDocs);
 
     vectorStore = await MemoryVectorStore.fromDocuments(docs, new OpenAIEmbeddings());
+    isInitialized = true;
   }
-};
+}
+
+// Simple in-memory cache
+const cache: { [key: string]: string } = {};
 
 export async function POST(req: Request) {
   try {
@@ -58,14 +65,12 @@ export async function POST(req: Request) {
     const formattedPreviousMessages = messages.slice(0, -1).map(formatMessage);
     const currentMessageContent = messages[messages.length - 1].content;
 
-    await loadAndProcessDocs();
+    // Check cache first
+    const cacheKey = currentMessageContent;
+    if (cache[cacheKey]) {
+      return new Response(cache[cacheKey]);
+    }
 
-    const retriever = vectorStore.asRetriever();
-    const relevantDocs = await retriever.getRelevantDocuments(currentMessageContent);
-
-    const relevantText = relevantDocs.map(doc => doc.pageContent).join('\n');
-
-    const prompt = PromptTemplate.fromTemplate(TEMPLATE);
     const model = new ChatOpenAI({
       apiKey: process.env.OPENAI_API_KEY,
       model: 'gpt-3.5-turbo',
@@ -76,6 +81,16 @@ export async function POST(req: Request) {
       throw new Error('Failed to initialize ChatOpenAI model');
     }
 
+    let relevantText = '';
+    if (isInitialized && vectorStore) {
+      const retriever = vectorStore.asRetriever();
+      const relevantDocs = await retriever.getRelevantDocuments(currentMessageContent);
+      relevantText = relevantDocs.map(doc => doc.pageContent).join('\n');
+    } else {
+      relevantText = "I'm still loading the necessary information. I'll do my best to answer based on general knowledge, but I may not have access to specific details at the moment.";
+    }
+
+    const prompt = PromptTemplate.fromTemplate(TEMPLATE);
     const parser = new HttpResponseOutputParser();
     const chain = RunnableSequence.from([
       {
@@ -100,8 +115,20 @@ export async function POST(req: Request) {
 
     console.log('Stream generated successfully');
 
+    // Cache the response
+    let fullResponse = '';
+    const cacheStream = new TransformStream({
+      transform(chunk, controller) {
+        fullResponse += chunk;
+        controller.enqueue(chunk);
+      },
+      flush(controller) {
+        cache[cacheKey] = fullResponse;
+      }
+    });
+
     return new StreamingTextResponse(
-      stream.pipeThrough(createStreamDataTransformer()),
+      stream.pipeThrough(createStreamDataTransformer()).pipeThrough(cacheStream)
     );
   } catch (e: any) {
     console.error('Error in POST function:', e);
